@@ -1,0 +1,36 @@
+name: Google Flights Automator Scraper
+
+on:
+  schedule:
+    - cron: '0 8 * * *' # Runs automatically every single day at 08:00 UTC
+  workflow_dispatch: # Allows you to manually click a button inside GitHub to run it instantly
+
+jobs:
+  run-scraper:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Code Repository
+      uses: actions/checkout@v4
+
+    - name: Initialize Python Environment
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        cache: 'pip'
+
+    - name: Install Underlying System Dependencies
+      run: |
+        pip install playwright
+        playwright install chromium
+        playwright install-deps chromium
+
+    - name: Execute Python Scraper Script
+      run: python scraper.py
+
+    - name: Save Extracted Data Report as Build Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: flight-pricing-report
+        path: output/
+        retention-days: 7
