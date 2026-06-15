@@ -1,8 +1,8 @@
 name: Google Flights Automator Scraper
 
 on:
-  schedule:
-    - cron: '0 8 * * *' # Automated run daily at 08:00 UTC
+  #schedule:
+    #- cron: '0 8 * * *' # Automated run daily at 08:00 UTC
   workflow_dispatch: # Manual trigger capability
 
 jobs:
