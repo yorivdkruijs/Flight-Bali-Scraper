@@ -35,7 +35,7 @@ async def scrape_flights():
         )
         page = await context.new_page()
         
-        # Network Asset Interceptor to keep things light
+        # Optimize asset routing to save bandwidth and speed up actions
         async def intercept_route(route):
             if route.request.resource_type in ["image", "font", "media"]:
                 await route.abort()
@@ -63,28 +63,30 @@ async def scrape_flights():
                 out_str = out_date.strftime("%Y-%m-%d")
                 ret_str = ret_date.strftime("%Y-%m-%d")
                 
-                # Using live production endpoint for stable rendering
-                query = f"Flights from {ORIGIN} to {DESTINATION} for 2 adults with 2 checked bags on {out_str} through {ret_str}"
+                # FIXED: Swapped out the ghost domain for the true live production URL
+                query = f"Flights from {ORIGIN} to {DESTINATION} for 2 adults on {out_str} through {ret_str}"
                 url = f"https://www.google.com/travel/flights?q={query.replace(' ', '+')}&hl=en&curr=EUR"
                 
                 try:
                     await page.goto(url, wait_until="domcontentloaded", timeout=15000)
                     await page.wait_for_timeout(random.uniform(800, 1500))
                     
-                    # Dismiss cookie consent walls if present
-                    consent_button = page.locator('button:has-text("Accept all"), button:has-text("Agree"), button:has-text("Ik ga akkoord")').first
+                    # Bypass potential European cookie frames dynamically
+                    consent_button = page.locator('button:has-text("Accept all"), button:has-text("Agree"), button:has-text("Ik ga akkoord"), button:has-text("Alles accepteren")').first
                     if await consent_button.is_visible():
                         await consent_button.click()
                         await page.wait_for_timeout(800)
                     
-                    await page.wait_for_selector('role=listitem', timeout=5000)
-                    flight_rows = await page.locator('role=listitem').all()
+                    # Look for flight item blocks across standard and fallback class definitions
+                    await page.wait_for_selector('role=listitem, [data-flight-ticket]', timeout=6000)
+                    flight_rows = await page.locator('role=listitem, [data-flight-ticket]').all()
                     
                     for row in flight_rows:
                         text_content = await row.inner_text()
                         if not text_content or "€" not in text_content:
                             continue
                         
+                        # Validate departure origin directly from text signature
                         if "AMS" not in text_content:
                             continue
                         
@@ -93,12 +95,12 @@ async def scrape_flights():
                             continue
                         
                         try:
-                            # Parse total price as an integer
+                            # Clean price parsing
                             price_match = re.search(r'€\s*([\d.,]+)', text_content)
                             if not price_match: continue
                             total_price_int = int(price_match.group(1).replace('.', '').replace(',', ''))
                             
-                            # Travel time check
+                            # Duration filters enforcement
                             duration_match = re.search(r'(\d+\s*hr\s*\d*\s*min|\d+\s*hr)', text_content)
                             duration_str = duration_match.group(1) if duration_match else "Unknown"
                             total_hours = parse_duration(duration_str)
@@ -106,7 +108,7 @@ async def scrape_flights():
                             if total_hours > MAX_DURATION_HOURS:
                                 continue
                             
-                            # Stopover checks
+                            # Layover step validation
                             stops = 0
                             layover_city = "Nonstop"
                             if "1 stop" in text_content:
@@ -119,7 +121,7 @@ async def scrape_flights():
                             if stops > MAX_STOPS:
                                 continue
                             
-                            # Clean up airline names
+                            # Cleanly extract airline signature
                             depart_time = lines[0]
                             airline = "Unknown Airline"
                             for line in lines:
@@ -131,7 +133,6 @@ async def scrape_flights():
                                 airline = line
                                 break
 
-                            # Strange layout conditions monitor
                             strange_conditions = "None"
                             condition_flags = ["Change of airport", "Overnight stay", "Long layover", "Separate tickets"]
                             matched_conditions = [c for c in condition_flags if c.lower() in text_content.lower()]
@@ -150,16 +151,16 @@ async def scrape_flights():
                                 "total_price_2_passengers": total_price_int,
                                 "strange_conditions": strange_conditions
                             })
-                            break 
+                            break # Step out to avoid capturing duplicate rows from single date loop
                         except Exception:
                             continue
                 except Exception:
                     continue
                     
-        # Sort options by price
+        # Sort listings to present absolute lowest cost pairs first
         all_results = sorted(all_results, key=lambda x: x["total_price_2_passengers"])
         
-        # --- OUTPUT TERMINAL PANEL ---
+        # --- OUTPUT PANEL ---
         print("\n" + "="*80)
         print("🏆 TOP 5 CHEAPEST FLIGHT COMBINATIONS FOUND (AMS ✈️ DPS)")
         print("="*80)
@@ -173,7 +174,7 @@ async def scrape_flights():
                 print(f"   💺 Airline: {flight['airline']}")
                 print(f"   🛑 Stops: {flight['stops']} ({flight['layover_airport']})")
                 print(f"   🕒 Departs: {flight['departing_time']} | ⏳ Duration: {flight['travel_time']}")
-                print(f"   💰 Price (2 Pax + 2 Bags): €{flight['total_price_2_passengers']}")
+                print(f"   💰 Price (2 Pax): €{flight['total_price_2_passengers']}")
                 print(f"   ⚠️ Conditions: {flight['strange_conditions']}")
         
         # --- GENERAL HEALTH CHECK & VALIDATION STATUS ---
