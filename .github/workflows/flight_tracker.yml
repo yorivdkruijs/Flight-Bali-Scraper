@@ -2,8 +2,8 @@ name: Google Flights Automator Scraper
 
 on:
   schedule:
-    - cron: '0 8 * * *' # Runs automatically every single day at 08:00 UTC
-  workflow_dispatch: # Allows you to manually click a button inside GitHub to run it instantly
+    - cron: '0 8 * * *' # Automated run daily at 08:00 UTC
+  workflow_dispatch: # Manual trigger capability
 
 jobs:
   run-scraper:
@@ -17,7 +17,6 @@ jobs:
       uses: actions/setup-python@v5
       with:
         python-version: '3.11'
-        # Removed the cache line to prevent the missing file error
 
     - name: Install Underlying System Dependencies
       run: |
@@ -27,10 +26,3 @@ jobs:
 
     - name: Execute Python Scraper Script
       run: python flight_scraper.py
-
-    - name: Save Extracted Data Report as Build Artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: flight-pricing-report
-        path: output/
-        retention-days: 7
