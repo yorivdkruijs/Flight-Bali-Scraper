@@ -27,7 +27,6 @@ def parse_duration(duration_str):
 
 async def scrape_flights():
     async with async_playwright() as p:
-        # Launch headless browser with defensive settings to avoid detection
         browser = await p.chromium.launch(
             headless=True,
             args=["--no-sandbox", "--disable-blink-features=AutomationControlled"]
@@ -38,42 +37,54 @@ async def scrape_flights():
         )
         page = await context.new_page()
         
+        # --- STRATEGY 2: Network Optimization Interceptor ---
+        # Aborts heavy, non-essential data transfers instantly before they hit the runner
+        async def intercept_route(route):
+            if route.request.resource_type in ["image", "font", "media"]:
+                await route.abort()
+            elif any(track in route.request.url for track in ["analytics", "stats", "doubleclick", "google-analytics"]):
+                await route.abort()
+            else:
+                await route.continue_()
+        
+        await page.route("**/*", intercept_route)
+        # ----------------------------------------------------
+        
         all_results = []
         
-        # Calculate outbound dates
         current_outbound = START_OUTBOUND
         outbound_dates = []
         while current_outbound <= END_OUTBOUND:
             outbound_dates.append(current_outbound)
             current_outbound += timedelta(days=1)
             
-        print(f"✈️ Starting search loop for {len(outbound_dates)} outbound dates...")
+        print(f"✈️ Starting optimized search loop for {len(outbound_dates)} outbound dates...")
 
         for out_date in outbound_dates:
-            # Check 24 and 25 days trip durations (~3.5 weeks)
-            for duration_days in [24, 25]:
+            for duration_days in [24, 25]: # ~3.5 weeks trip durations
                 ret_date = out_date + timedelta(days=duration_days)
                 
                 out_str = out_date.strftime("%Y-%m-%d")
                 ret_str = ret_date.strftime("%Y-%m-%d")
                 
-                print(f"Scanning: Outbound {out_str} | Return {ret_str} ({duration_days} days total)...")
+                print(f"Scanning: Outbound {out_str} | Return {ret_str}...")
                 
-                # Construct Natural Language Google Flights Deep Link
-                url = f"https://www.google.com/travel/flights?q=Flights+from+{ORIGIN}+to+{DESTINATION}+on+{out_str}+through+{ret_str}&hl=en&curr=EUR"
+                # Query specifying 2 adults and 2 checked bags (implies 1 bag per person, min 20-25kg standard)
+                query = f"Flights from {ORIGIN} to {DESTINATION} for 2 adults with 2 checked bags on {out_str} through {ret_str}"
+                url = f"https://www.google.com/travel/flights?q={query.replace(' ', '+')}&hl=en&curr=EUR"
                 
                 try:
-                    await page.goto(url, wait_until="load", timeout=30000)
-                    await page.wait_for_timeout(random.uniform(2000, 4000))
+                    # Swapped 'load' to 'domcontentloaded' to skip waiting for trailing asset downloads
+                    await page.goto(url, wait_until="domcontentloaded", timeout=20000)
+                    await page.wait_for_timeout(random.uniform(1000, 2000))
                     
-                    # Intercept and auto-dismiss Google's European Cookie Consent banner if it triggers
+                    # Handle cookie consent wall
                     consent_button = page.locator('button:has-text("Accept all"), button:has-text("Agree"), button:has-text("Ik ga akkoord")').first
                     if await consent_button.is_visible():
                         await consent_button.click()
-                        await page.wait_for_timeout(1500)
+                        await page.wait_for_timeout(1000)
                     
-                    # Wait for flight card container rows to render
-                    await page.wait_for_selector('role=listitem', timeout=10000)
+                    await page.wait_for_selector('role=listitem', timeout=8000)
                     flight_rows = await page.locator('role=listitem').all()
                     
                     for row in flight_rows:
@@ -81,50 +92,56 @@ async def scrape_flights():
                         if not text_content or "€" not in text_content:
                             continue
                         
-                        # Clean and split elements inside the flight card text block
-                        lines = [line.strip() for line in text_content.split("\n") if line.strip()]
+                        # Rule Verification: Confirm flight strictly departs from AMS
+                        if "AMS" not in text_content:
+                            continue
                         
-                        # Skip administrative or UI-only blocks
+                        lines = [line.strip() for line in text_content.split("\n") if line.strip()]
                         if len(lines) < 4 or "Hide" in lines[0] or "Separate tickets" in lines[0]:
                             continue
                         
-                        # Data Extraction safely wrapped via Text Processing
                         try:
-                            # 1. Price Matching (Looks for standard € pricing)
+                            # 1. Parse total combined price directly as an Integer
                             price_match = re.search(r'€\s*([\d.,]+)', text_content)
                             if not price_match: continue
-                            price_per_person = int(price_match.group(1).replace('.', '').replace(',', ''))
-                            total_price_for_two = price_per_person * 2  # Scaled for 2 persons
+                            total_price_int = int(price_match.group(1).replace('.', '').replace(',', ''))
                             
                             # 2. Flight Duration Check
                             duration_match = re.search(r'(\d+\s*hr\s*\d*\s*min|\d+\s*hr)', text_content)
                             duration_str = duration_match.group(1) if duration_match else "Unknown"
                             total_hours = parse_duration(duration_str)
                             
-                            # Filter Rule 1: Max travel time cap (19 hours)
                             if total_hours > MAX_DURATION_HOURS:
                                 continue
                             
-                            # 3. Stopover Verification
+                            # 3. Stopover Check
                             stops = 0
                             layover_city = "Nonstop"
                             if "1 stop" in text_content:
                                 stops = 1
-                                # Isolate layout code tokens for layover city codes (e.g., SIN, DXB)
                                 stop_match = re.search(r'1 stop\s*([\d\s*hr\s*min]*)\s*([A-Z]{3})', text_content)
                                 if stop_match: layover_city = stop_match.group(2)
                             elif "2 stops" in text_content or "3 stops" in text_content:
-                                stops = 2 # Will be excluded via standard filters
-                                
-                            # Filter Rule 2: Max Stops Cap (1 stop)
+                                continue
+                            
                             if stops > MAX_STOPS:
                                 continue
                             
-                            # 4. Extracting Core Identifiers (Airline & Depart Time)
-                            depart_time = lines[0]  # Usually the first element in the text stack
-                            airline = lines[1] if len(lines) > 1 else "Unknown Airline"
+                            # 4. Filter and Isolate Clean Airline String
+                            depart_time = lines[0]
+                            airline = "Unknown Airline"
                             
-                            # 5. Identifying Strange/Irregular Conditions
+                            for line in lines:
+                                if re.search(r'\d{1,2}:\d{2}', line): continue # Filter times
+                                if line in ["–", "-", "—", "Separate tickets"]: continue # Filter symbols/artifacts
+                                if "hr" in line or "min" in line or "stop" in line or "Nonstop" in line: continue
+                                if "€" in line: continue
+                                if re.search(r'^[A-Z]{3}[–\-][A-Z]{3}$', line): continue # Filter routing stacks (e.g. AMS-DPS)
+                                
+                                airline = line
+                                break
+
+                            # 5. Strange/Irregular Conditions Verification
                             strange_conditions = "None"
                             condition_flags = ["Change of airport", "Overnight stay", "Long layover", "Separate tickets"]
                             matched_conditions = [c for c in condition_flags if c.lower() in text_content.lower()]
@@ -140,29 +157,24 @@ async def scrape_flights():
                                 "layover_airport": layover_city,
                                 "departing_time": depart_time,
                                 "travel_time": duration_str,
-                                "total_price_2_passengers": f"€{total_price_for_two}",
-                                "strange_conditions": strange_conditions,
-                                "numeric_price": total_price_for_two
+                                "total_price_2_passengers": total_price_int, # Saved cleanly as int
+                                "strange_conditions": strange_conditions
                             })
-                            
-                            # Break out early after capturing the cheapest options on the page
-                            break 
+                            break
                         except Exception as e:
                             continue
                             
                 except Exception as e:
-                    print(f"Skipping {out_str} due to quick layout bypass error.")
                     continue
                     
-        # Sort master list by price to immediately highlight the top choice
-        all_results = sorted(all_results, key=lambda x: x["numeric_price"])
+        # Sort entirely by cheapest option
+        all_results = sorted(all_results, key=lambda x: x["total_price_2_passengers"])
         
-        # Save structural JSON output
         os.makedirs("output", exist_ok=True)
         with open("output/flights_report.json", "w", encoding="utf-8") as f:
             json.dump(all_results, f, indent=4)
             
-        print(f"🎉 Scraping complete. Successfully compiled {len(all_results)} valid flight configurations.")
+        print(f"🎉 Scraping complete. Clean results compiled successfully.")
 
 if __name__ == "__main__":
     asyncio.run(scrape_flights())
